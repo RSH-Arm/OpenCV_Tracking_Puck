@@ -49,10 +49,10 @@ class TrackingPucks
 	void rectDraw();
 
 public:
-	TrackingPucks(cv::Mat);
+	TrackingPucks(cv::VideoCapture);
 
 	void init(Mat&);
-	void startloop(cv::VideoCapture&);
+	void startloop();
 	void startPosition(Mat&);
 
 private:
@@ -63,10 +63,13 @@ private:
 	double square;
 	float Radius;
 	bool flag_end = false;
-
+	int FPS;
 	vector<thread> pool_thread;
 	vector<Rect> pool_point_puck;
 	vector<cv::Ptr<cv::Tracker>> pool_tracker;
+
+	vector<cv::Mat> video_map;
+	vector<vector<Rect>> point_puck;
 };
 
 #endif //TRACKING

@@ -7,48 +7,83 @@ using namespace cv;
 ///
 /// Class --TrackingPucks-- Begin
 ///
-TrackingPucks::TrackingPucks(cv::Mat frame)
+TrackingPucks::TrackingPucks(cv::VideoCapture video)
 {
+	video_map.reserve(video.get(CAP_PROP_FRAME_COUNT));
+	//	point_puck.reserve(video.get(CAP_PROP_FRAME_COUNT) + 1);
+
+	FPS = video.get(CAP_PROP_FPS);
+
+	cv::Mat frame;
+	video.read(frame);
+
+	frame_in = frame.clone();
+	video_map.push_back(frame);
+
+	startPosition(frame);
 	s_grid = grid(frame);
+
+	while (video.read(frame))
+		video_map.push_back(frame.clone());
+
+
+	startloop();
+
+	video.release();
 };
 
 void TrackingPucks::tracking_puck(int i)
 {
-	while (!flag_end)
+	cout << "Threads start - " << i << endl;
+	auto puck = pool_point_puck[i];
+	point_puck[i].push_back(puck);
+
+	int k = 1;
+	for (auto& frame : video_map)
 	{
-		pool_tracker[i]->update(frame_in, pool_point_puck[i]);
+		pool_tracker[i]->update(frame, puck);
+		point_puck[i].push_back(puck);
+		k++;
 	}
 }
 
 void TrackingPucks::rectDraw()
 {
-	for (int i = 0; i < pool_point_puck.size(); i++)
-	{
-		cv::rectangle(frame_in, Rect(pool_point_puck[i].x + pool_point_puck[i].width / 2 - 35, pool_point_puck[i].y + pool_point_puck[i].height / 2 - 35, 70, 70), cv::Scalar(255, 0, 0));
-		
-		Point2f center;
-		center.x = pool_point_puck[i].x + pool_point_puck[i].width / 2;
-		center.y = pool_point_puck[i].y + pool_point_puck[i].height / 2;
+	vector<vector<Rect>::iterator> it;
+	for (auto& ii : point_puck)
+		it.push_back(ii.begin());
+
+	for (auto& frame : video_map) {
+
+		for (auto& rect : it)
+		{
+			cv::rectangle(frame, (*rect), cv::Scalar(255, 0, 0));
+
+			Point2f center;
+			center.x = (*rect).x + (*rect).width / 2;
+			center.y = (*rect).y + (*rect).height / 2;
 
 
-		line(frame_in, center, Point2f{ s_grid.center.x, center.y }, Scalar(0, 0, 255), 1, LINE_AA);	// X
-		line(frame_in, center, Point2f{ center.x, s_grid.center.y }, Scalar(0, 0, 255), 1, LINE_AA);	// Y
+			line(frame, center, Point2f{ s_grid.center.x, center.y }, Scalar(0, 0, 255), 1, LINE_AA);	// X
+			line(frame, center, Point2f{ center.x, s_grid.center.y }, Scalar(0, 0, 255), 1, LINE_AA);	// Y
 
-		string str_hor = to_string((center.x - s_grid.center.x) / s_grid.hor);
-		string str_ver = to_string((s_grid.center.y - center.y) / s_grid.ver);
+			string str_hor = to_string((center.x - s_grid.center.x) / s_grid.hor);
+			string str_ver = to_string((s_grid.center.y - center.y) / s_grid.ver);
 
-		cv::putText(frame_in,									// target image
-			{ "[" + str_hor + ", " + str_ver + "]" },			// text
-			cv::Point(pool_point_puck[i].x, pool_point_puck[i].y),	// top-left position
-			cv::FONT_HERSHEY_DUPLEX,
-			0.6,												// scale
-			CV_RGB(118, 185, 0),								// font color
-			1);
+			cv::putText(frame,									// target image
+				{ "[" + str_hor + ", " + str_ver + "]" },			// text
+				cv::Point((*rect).x, (*rect).y),	// top-left position
+				cv::FONT_HERSHEY_DUPLEX,
+				0.6,												// scale
+				CV_RGB(118, 185, 0),								// font color
+				1);
+			rect++;
+		}
 
+
+		cv::imshow("Video", frame);
+		cv::waitKey(30);
 	}
-
-	cv::imshow("Video", frame_in);
-	cv::waitKey(1);
 }
 
 void TrackingPucks::init(Mat& frame)
@@ -64,26 +99,27 @@ void TrackingPucks::init(Mat& frame)
 	}
 }
 
-void TrackingPucks::startloop(cv::VideoCapture& video_)
+void TrackingPucks::startloop()
 {
-	while (true)
+	point_puck.reserve(pool_point_puck.size());
+	pool_tracker.reserve(pool_point_puck.size());
+
+	for (int i = 0; i < pool_point_puck.size(); i++)
 	{
-		rectDraw();
+		cout << i << endl;
+		pool_tracker[i] = cv::TrackerCSRT::create();			// TrackerKCF // TrackerCSRT	// TrackerGOTURN // trackermil
 
-		if (video_.read(frame_in))
-		{
-			std::this_thread::sleep_for(std::chrono::milliseconds(55));
-		}
-		else
-		{
-			flag_end = true;
+		pool_tracker[i]->init(frame_in, pool_point_puck[i]);
 
-			for (auto& thread : pool_thread) {
-				thread.join();
-			}
-			break;
-		}
+		pool_thread.emplace_back(&TrackingPucks::tracking_puck, this, i);
 	}
+
+	for (auto& thread : pool_thread) {
+		thread.join();
+	}
+
+	cout << "start Draw" << endl;
+	rectDraw();
 }
 
 void TrackingPucks::startPosition(Mat& frame)
@@ -137,3 +173,11 @@ void TrackingPucks::startPosition(Mat& frame)
 ///
 /// Class --TrackingPucks-- End
 ///
+/// 
+/// 
+/// Time
+	//auto start = std::chrono::steady_clock::now();
+
+		//auto end = std::chrono::steady_clock::now();
+		//auto diff = end - start;
+		//std::cout << std::chrono::duration<double, std::milli>(diff).count() << " ms" << std::endl;

@@ -1,5 +1,7 @@
 ﻿
 #include "tracking.h"
+#include <chrono>
+//#include <my/multi_buffers/MultiBuffers.h>
 
 using namespace std;
 using namespace cv;
@@ -7,119 +9,144 @@ using namespace cv;
 ///
 /// Class --TrackingPucks-- Begin
 ///
-TrackingPucks::TrackingPucks(cv::VideoCapture video)
+TrackingPucks::TrackingPucks(cv::VideoCapture& video_, int sections_)
 {
-	video_map.reserve(video.get(CAP_PROP_FRAME_COUNT));
-	//	point_puck.reserve(video.get(CAP_PROP_FRAME_COUNT) + 1);
+	//*** Initialization ***
+	_FPS = video_.get(CAP_PROP_FPS);
+	_STOP = video_.get(CAP_PROP_FRAME_COUNT);
+	_Sections = sections_;
 
-	FPS = video.get(CAP_PROP_FPS);
+	cout << "_FPS:	"	<< _FPS << endl;
+	cout << "_STOP:	"	<< _STOP << endl;
 
+	//*** Reading the first frame ***
 	cv::Mat frame;
-	video.read(frame);
+	video_.read(frame);
 
-	frame_in = frame.clone();
-	video_map.push_back(frame);
-
+	//*** Initializes pool_point_puck ***
 	startPosition(frame);
+
+	//*** Initializes grid ***
 	s_grid = grid(frame);
 
-	while (video.read(frame))
-		video_map.push_back(frame.clone());
+	_Listeners = pool_point_puck.size();
+	video_queue.start(_Sections, _Listeners);
+	video_queue.setRaw(std::move(frame.clone()));
+
+	//*** Start threads ***
+	startThreads(frame);
+
+	std::thread th_loop(&TrackingPucks::rectDraw, this);
 
 
-	startloop();
-
-	video.release();
-};
-
-void TrackingPucks::tracking_puck(int i)
-{
-	cout << "Threads start - " << i << endl;
-	auto puck = pool_point_puck[i];
-	point_puck[i].push_back(puck);
-
-	int k = 1;
-	for (auto& frame : video_map)
+	int i = 1;
+	while (i < _STOP)
 	{
-		pool_tracker[i]->update(frame, puck);
-		point_puck[i].push_back(puck);
-		k++;
+		if (video_queue.canRecord())
+		{
+			if (video_.read(frame))
+			{
+				video_queue.setRaw(std::move(frame.clone()));
+				i++;
+			}
+			else
+			{
+				break;
+			}
+		}
 	}
-}
+	cout << "num: " << i << endl;
+
+	th_loop.join();
+	for (auto& x : pool_thread)
+	{
+		x.join();
+	}
+
+	video_.release();
+};
 
 void TrackingPucks::rectDraw()
 {
-	vector<vector<Rect>::iterator> it;
-	for (auto& ii : point_puck)
-		it.push_back(ii.begin());
+	std::vector<cv::Rect> rec(_Listeners);
+	cv::Mat frame;
 
-	for (auto& frame : video_map) {
+	int i = 0;
 
-		for (auto& rect : it)
+
+	std::this_thread::sleep_for(std::chrono::seconds(5));
+
+
+	while (i < _STOP)
+	{
+		if (video_queue.getResult(frame, rec))
 		{
-			cv::rectangle(frame, (*rect), cv::Scalar(255, 0, 0));
+			for (auto& rect : rec)
+			{
+				cv::rectangle(frame, rect, cv::Scalar(255, 0, 0));
 
-			Point2f center;
-			center.x = (*rect).x + (*rect).width / 2;
-			center.y = (*rect).y + (*rect).height / 2;
+				Point2f center;
+				center.x = rect.x + rect.width / 2;
+				center.y = rect.y + rect.height / 2;
 
 
-			line(frame, center, Point2f{ s_grid.center.x, center.y }, Scalar(0, 0, 255), 1, LINE_AA);	// X
-			line(frame, center, Point2f{ center.x, s_grid.center.y }, Scalar(0, 0, 255), 1, LINE_AA);	// Y
+				line(frame, center, Point2f{ s_grid.center.x, center.y }, Scalar(0, 0, 255), 1, LINE_AA);	// X
+				line(frame, center, Point2f{ center.x, s_grid.center.y }, Scalar(0, 0, 255), 1, LINE_AA);	// Y
 
-			string str_hor = to_string((center.x - s_grid.center.x) / s_grid.hor);
-			string str_ver = to_string((s_grid.center.y - center.y) / s_grid.ver);
+				string str_hor = to_string((center.x - s_grid.center.x) / s_grid.hor);
+				string str_ver = to_string((s_grid.center.y - center.y) / s_grid.ver);
 
-			cv::putText(frame,									// target image
-				{ "[" + str_hor + ", " + str_ver + "]" },			// text
-				cv::Point((*rect).x, (*rect).y),	// top-left position
-				cv::FONT_HERSHEY_DUPLEX,
-				0.6,												// scale
-				CV_RGB(118, 185, 0),								// font color
-				1);
-			rect++;
+				cv::putText(frame,									// target image
+					{ "[" + str_hor + ", " + str_ver + "]" },		// text
+					cv::Point(rect.x, rect.y),						// top-left position
+					cv::FONT_HERSHEY_DUPLEX,
+					0.6,											// scale
+					CV_RGB(118, 185, 0),							// font color
+					1);
+			}
+
+			i++;
+			cv::imshow("Video", frame);
+			cv::waitKey(_FPS);
+			video_queue.resultRelease();
 		}
-
-
-		cv::imshow("Video", frame);
-		cv::waitKey(30);
 	}
+
+	flag_end = false;
 }
 
-void TrackingPucks::init(Mat& frame)
+void TrackingPucks::startThreads(cv::Mat& frame)
 {
-	frame_in = frame.clone();
-	pool_tracker.resize(pool_point_puck.size());
+	pool_tracker.resize(_Listeners);
 
-	for (int i = 0; i < pool_point_puck.size(); i++)
-	{
-		pool_tracker[i] = cv::TrackerCSRT::create();			// TrackerKCF // TrackerCSRT	// TrackerGOTURN // trackermil
-		pool_tracker[i]->init(frame_in, pool_point_puck[i]);
-		pool_thread.emplace_back(&TrackingPucks::tracking_puck, this, i);
+	try {
+		for (int id = 0; id < _Listeners; id++)
+		{
+			pool_tracker[id] = cv::TrackerCSRT::create();			// TrackerKCF // TrackerCSRT	// TrackerGOTURN // trackermil
+			pool_tracker[id]->init(frame, pool_point_puck[id]);
+
+			pool_thread.emplace_back(&TrackingPucks::tracking_puck, this, id);
+		}
 	}
+	catch (const std::exception& e) {
+		std::cerr << e.what() << std::endl;
+	}
+
+	cout << "Start Threads" << endl;
 }
 
-void TrackingPucks::startloop()
+void TrackingPucks::tracking_puck(int id_thread)
 {
-	point_puck.reserve(pool_point_puck.size());
-	pool_tracker.reserve(pool_point_puck.size());
-
-	for (int i = 0; i < pool_point_puck.size(); i++)
+	cv::Mat frame;
+	while (true)
 	{
-		cout << i << endl;
-		pool_tracker[i] = cv::TrackerCSRT::create();			// TrackerKCF // TrackerCSRT	// TrackerGOTURN // trackermil
-
-		pool_tracker[i]->init(frame_in, pool_point_puck[i]);
-
-		pool_thread.emplace_back(&TrackingPucks::tracking_puck, this, i);
+		if (video_queue.getRaw(frame, id_thread))
+		{
+			pool_tracker[id_thread]->update(frame, pool_point_puck[id_thread]);
+			video_queue.setResult(pool_point_puck[id_thread], id_thread);
+		}
+		/**else**/ if (!flag_end) break;
 	}
-
-	for (auto& thread : pool_thread) {
-		thread.join();
-	}
-
-	cout << "start Draw" << endl;
-	rectDraw();
 }
 
 void TrackingPucks::startPosition(Mat& frame)
@@ -157,7 +184,7 @@ void TrackingPucks::startPosition(Mat& frame)
 
 		if (radius >= 20 && radius < 30)
 		{
-			Radius += radius;
+			_Radius += radius;
 			n += v_area[j];
 			i++;
 			radius = 35;
@@ -167,17 +194,10 @@ void TrackingPucks::startPosition(Mat& frame)
 		j++;
 	}
 
-	Radius = Radius / i + 5;
-	square = n / i;
+	_Radius = _Radius / i + 5;
+	_Square = n / i;
 }
+
 ///
 /// Class --TrackingPucks-- End
 ///
-/// 
-/// 
-/// Time
-	//auto start = std::chrono::steady_clock::now();
-
-		//auto end = std::chrono::steady_clock::now();
-		//auto diff = end - start;
-		//std::cout << std::chrono::duration<double, std::milli>(diff).count() << " ms" << std::endl;

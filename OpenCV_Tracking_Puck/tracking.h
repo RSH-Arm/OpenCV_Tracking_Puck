@@ -4,7 +4,7 @@
 #include <opencv2/opencv.hpp>
 #include "opencv2/highgui.hpp"
 #include "opencv2/tracking.hpp"
-
+#include <my/multi_buffers/MultiBuffers.h>
 
 #include <iostream>
 #include "auto_grid.h"
@@ -49,27 +49,31 @@ class TrackingPucks
 	void rectDraw();
 
 public:
-	TrackingPucks(cv::VideoCapture);
+	TrackingPucks(cv::VideoCapture&, int);
 
-	void init(Mat&);
-	void startloop();
-	void startPosition(Mat&);
+	void startThreads(cv::Mat&);
+	void startPosition(cv::Mat&);
 
 private:
 
-	cv::Mat frame_in;
 	setting_grid s_grid;
 
-	double square;
-	float Radius;
-	bool flag_end = false;
-	int FPS;
-	vector<thread> pool_thread;
-	vector<Rect> pool_point_puck;
-	vector<cv::Ptr<cv::Tracker>> pool_tracker;
+	double	_FPS,
+			_STOP,
+			_Square;
 
-	vector<cv::Mat> video_map;
-	vector<vector<Rect>> point_puck;
+	float	_Radius;
+
+	bool	flag_end = true;
+
+	int		_Sections,
+			_Listeners;
+
+	vector<Rect>					pool_point_puck;
+	vector<thread>					pool_thread;
+	vector<cv::Ptr<cv::Tracker>>	pool_tracker;
+
+	multi::MultiPipeline_RW<cv::Mat, cv::Rect> video_queue;
 };
 
 #endif //TRACKING
